@@ -1,118 +1,153 @@
-﻿var db;
-var updateConflictCB;
-var insertCB;
-var onChangeCB;
-var remoteCouch;
-var docToBePut;
+//PouchDB instance
+var db;
 
-//Making a copy of the default PouchDB.put and PouchDB.post functions
-PouchDB.prototype._put_base = PouchDB.prototype.put;
-PouchDB.prototype._post_base = PouchDB.prototype.post;
-
-//Altering the PouchDB.post function to bind the document as a parameter
-PouchDB.prototype.post = function (doc, callback) {
-
-    var docid = doc._id;
-    var rev = doc._rev;
-
-    if (callback != null)
-        this._post_base(doc, callback.bind(this, doc));
-    else
-        this._post_base(doc);
-
-}
-
-//Altering the PouchDB.put function to bind the document as a parameter
-PouchDB.prototype.put = function (doc, callback) {
-
-    var docid = doc._id;
-    var rev = doc._rev;
-
-    if (callback != null)
-        this._put_base(doc, callback.bind(this, doc));
-    else
-        this._put_base(doc);
-
+/**
+    ResFramework Constructor. All fields should be set.
+*/
+function ResFramework() {
+    this.onChangeCallback;
+    this.onConflictCallback;
+    this.dbName;
+    this.remoteURL;
+    this.options;
 }
 
 /**
-    Initialisation function
-    onConflictCallback: Callback function to be used for every conflict which arises
-    onChangeCallback: Callback function to be used for every change action
-    dbName: Name of PouchDB node to be created/used
-    remoteURL: IP/DB name of CouchDB node in that format
+    Initialisation function to create the PouchDB instance
+    To use the init function,
+    the dbName must have already been specified.
 */
-function init(onConflictCallback, onChangeCallback, dbName, remoteURL) {
-    db = new PouchDB(dbName);
-    remoteCouch = remoteURL;
-
-    //Setup the conflict and change callbacks
-    updateConflictCB = onConflictCallback;
-    onChangeCB = onChangeCallback;
-
-    //Initialise first sync operation 
-    sync();
-
-    //Set an onChange listener
-    db.changes({
-        since: 'now',
-        live: true,
-        include_docs: true,
-        conflicts: true
-    }).on('change', function (info) {
-
-        if (info.deleted) {
-            // document was deleted
-            console.log("Delete was made");
-
-        } else {
-            // document was updated
-            console.log("Update was made");
-
-            var conflicts = info.doc._conflicts;
-
-            //If the document includes a conflicts array
-            if (conflicts != null) {
-
-                //For each conflict in the array, check whether any one matches the current conflict
-                for (var i = 0; i < conflicts.length; i++) {
-                    var conflict = conflicts[i];
-
-                    var rev_parts = conflict.split("-");
-                    if (info.doc._rev.startsWith(rev_parts[0] + "-")) {
-                        //conflict = conflicting version
-                        //chosen by couchdb = winning version
-
-                        console.log('An update conflict occured');
-                        updateConflictCB(info.doc, conflict);
-                        //info.doc is the entire chosen doc, conflict is just the conflicting rev num
-                    }
-                }
-            }
-
-        }
-
-        onChangeCB();
-
-    });
+ResFramework.prototype.init = function () {
+    if (this.dbName != null) {
+        db = new PouchDB(this.dbName);
+        return true;
+    }
+    else {
+        //Specify the PouchDB name.
+        return false;
+    }
 }
 
 /**
     Initialise a sync operation with the remote CouchDB server
 */
-function sync() {
-    var opts = { live: true, conflicts: true, retry: true };
-    db.sync(remoteCouch, opts
-    ).on('change', function (change) {
-        onChangeCB();
-        console.log(change);
-        console.log('to change');
-    }).on('paused', function () {
-        console.log('to paused');
-    }).on('active', function () {
-        console.log('to active');
-    }).on('error', function (err) {
-        console.log('to error');
+ResFramework.prototype.sync = function () {
+
+    if (db != null) {
+        if (this.remoteURL != null && this.options != null) {
+            db.sync(this.remoteURL, this.options
+            ).on('change', function (change) {
+                this.onChangeCallback();
+                //Change operation
+            }).on('paused', function () {
+                //DB Paused operation
+            }).on('active', function () {
+                //DB Active operaion
+            }).on('error', function (err) {
+                //DB error on sync 
+            });
+        }
+        else {
+            //RemoteURL and/or sync options object are null. 
+        }
+    }
+    else {
+        //PouchDB has not yet been initialised. init() function must be called.
+    }
+}
+
+/**
+    Initialises an on change listener on the PouchDB instance.
+    Accepts an object of options which will customise the changes listener.
+*/
+ResFramework.prototype.initChangesListener = function (options) {
+
+    var changeCB = this.onChangeCallback;
+    var conflictCB = this.onConflictsCallback;
+
+    db.changes(
+        options
+        ).on('change', function (info) {
+
+            if (info.deleted) {
+               //Delete was made
+            } else {
+                //Update was made
+
+                var conflicts = info.doc._conflicts;
+
+                //If the document includes a conflicts array
+                if (conflicts != null) {
+
+                    //For each conflict in the array, check whether any one matches the current conflict
+                    for (var i = 0; i < conflicts.length; i++) {
+                        var conflict = conflicts[i];
+
+                        var rev_parts = conflict.split("-");
+                        if (info.doc._rev.startsWith(rev_parts[0] + "-")) {
+                            //conflict = conflicting version
+                            //chosen by couchdb = winning version
+
+                            //An eventual update conflict has arisen and the conflict callback should be called
+                            conflictCB(info.doc, conflict);
+                            //info.doc is the entire chosen doc, conflict is just the conflicting rev num
+                        }
+                    }
+                }
+
+            }
+            //Call the change callback after a change was made.
+            changeCB();
+        });
+}
+
+/**
+    Database PUT operation.
+    Accepts the document to be PUT and a callback function.
+*/
+ResFramework.prototype.put = function (doc, callback) {
+
+    return new Promise(function (resolve, reject) {
+        db.put(doc).then(function (response) {
+            callback(doc, null, response).then(function () {
+                resolve();
+            }).catch(function () {
+                reject();
+            });
+
+        }).catch(function (err) {
+            callback(doc, err, null)
+               .then(function () {
+                   resolve();
+               }).catch(function () {
+                   reject();
+               });
+        });
+    });
+}
+
+
+/**
+    Database POST operation.
+    Accepts the document to be POSTed and a callback function.
+*/
+ResFramework.prototype.post = function (doc, callback) {
+
+    return new Promise(function (resolve, reject) {
+        db.post(doc).then(function (response) {
+            callback(doc, null, response).then(function () {
+                resolve();
+            }).catch(function () {
+                reject();
+            });
+
+        }).catch(function (err) {
+            callback(doc, err, null).then(function () {
+                resolve();
+            }).catch(function () {
+                reject();
+            });
+        });
     });
 
 }
@@ -120,84 +155,132 @@ function sync() {
 /**
     INSERT - Immediate Conflict Resolution - Attempts to re-insert using a different ID
 */
-function insertRetry(doc, err, result) {
-    if (!err) {
-        if (result && result.ok) {
-            console.log('Insert operation carried out successfully.');
+function Insert_ReAttemptWithUUID(doc, err, result) {
+
+    return new Promise(function (resolve, reject) {
+        if (!err) {
+            if (result && result.ok) {
+                //Insert operation carried out successfully
+                resolve();
+            }
         }
-    }
-    else {
-        if (err.status === 409) {
-            console.log('Insert operation resulted in a conflict. Retry in progress.');
-            doc._id = null;
-            db.post(doc, insertNoRetry);
+        else {
+            if (err.status === 409) {
+                //Insert operation resulted in a conflict. Retry in progress.
+
+                this.fw.post(doc, Insert_NoReAttempt).then(function () {
+                    resolve();
+                }).catch(function () {
+                    reject();
+                });
+
+            }
+            else if (err.status === 412) {
+                 //Missing ID. Retry in progress.
+
+                this.fw.post(doc, Insert_NoReAttempt)
+                    .then(function () {
+                        resolve();
+                    }).catch(function () {
+                        reject();
+                    });
+            } else {
+
+                reject();
+            }
         }
-    }
-};
+    });
+}
 
 /**
     INSERT - Immediate Conflict Resolution - Attempts no re-insert 
 */
-function insertNoRetry(doc, err, result) {
-    if (!err) {
-        if (result && result.ok) {
-            console.log('Insert operation carried out successfully.');
-        }
-    }
-    else {
-        if (err.status === 409) {
-            console.log('Insert operation resulted in a conflict - Error 409.');
+function Insert_NoReAttempt(doc, err, result) {
+
+    return new Promise(function (resolve, reject) {
+        if (!err) {
+            if (result && result.ok) {
+               //Insert operation carried out successfully.
+                resolve();
+            }
         }
         else {
-            console.log('Insert operation could not pe performed.');
+            if (err.status === 409) {
+                //Insert operation resulted in a conflict - Error 409.
+            }
+            else if (err.status === 412) {
+                //Missing ID
+            }
+            reject();
         }
-    }
-};
+    });
+}
 
 /**
     Update - Immediate update conflict - Attempt re-using new revision number
 */
-function updateNewRevNum(doc, err, response) {
+function Update_NewRevisionNum(doc, err, response) {
 
     var _doc = doc;
-    //update using a new revision number
-    if (err && err.status == '409') {
-        db.get(_doc._id).then(function (doc) {
-            console.log('Re-attempting update with new revision number');
-            _doc._rev = doc._rev;
-            db.put(_doc).then(function (response) {
-                console.log(response);
-            }).catch(function (err) {
-                console.log(err);
-            });
-        }).catch(function (err) {
-            console.log('error');
-        });
 
-    }
+    return new Promise(function (resolve, reject) {
+        if (!err && response.ok) {
+           //Update operation carried out successfully.
+            resolve();
+        }
+        else {
+            if (err.status === 409) {
+                //Update operation resulted in a conflict
+                db.get(_doc._id).then(function (doc) {
+                    //Re-attempting update with new revision number
+                    _doc._rev = doc._rev;
+                    db.put(_doc).then(function (response) {
+                        resolve();
+                        //Success
+                    }).catch(function (err) {
+                        reject();
+                        //Error
+                    });
+                }).catch(function (err) {
+                    //Error
+                    reject();
+                });
+            }
+            else {
+
+                reject();
+            }
+        }
+    });
 }
 
 /**
     Update - Immediate update conflict - Don't re-attempt update
 */
-function updateReject(doc, err, response) {
+function Update_NoReAttempt(doc, err, response) {
+    return new Promise(function (resolve, reject) {
+        if (err) {
+            if (err.status === 409) {
+                //Update operation resulted in a conflict. Update has been rejected.
+                reject();
+            }
+            if (err.status === 412) {
+                //Update operation resulted in a conflict due to missing ID. Update has been rejected.
+                reject();
+            }
+        }
 
-    if (err && err.status == '409') {
-        console.log('A conflict occured. Update has been rejected.');
-        console.log(doc);
-    }
-
-    onChangeCB();
+        resolve();
+    });
 }
-
 /**
    Replication -  Eventual conflict - Agree with CouchDB's descision 
+   Remove conflict from conflicts array.
 */
-function replicationAgree(doc, err, response) {
+function EventualConflict_Accept(doc, err) {
     var conflicts = doc._conflicts;
 
     if (conflicts != null) {
-
         for (var i = 0; i < conflicts.length; i++) {
             var conflict = conflicts[i];
 
@@ -214,11 +297,12 @@ function replicationAgree(doc, err, response) {
 }
 
 /**
-    Replication -  Eventual conflict - Merge documents
+    Replication -  Eventual conflict - Merge documents based on keys
+    Choose arbitrary value from 2 keys which have both been modified.
     doc: the document declared as the winner by CouchDB
     conf: revision number of the conflicting document
 */
-function replicationMerge(doc, conf, err, response) {
+function EventualConflicts_Merge(doc, conf) {
     var original;
     var rejected;
     var chosen = doc;
@@ -242,30 +326,30 @@ function replicationMerge(doc, conf, err, response) {
             db.get(doc._id, options_rej).then(function (doc) {
 
                 rejected = doc;
-                var result_or_cho = {};
-                var result_or_rej = {};
+                var result_orig_cho = {};
+                var result_orig_rej = {};
 
                 for (var p in original) {
                     if (original.hasOwnProperty(p)) {
                         if (chosen.hasOwnProperty(p)) {
                             if (original[p] == chosen[p]) {
                                 //values are equal
-                                result_or_cho[p] = 0;
+                                result_orig_cho[p] = 0;
                             }
                             else {
                                 //values not equal - change was done
-                                result_or_cho[p] = 1;
+                                result_orig_cho[p] = 1;
                             }
                         }
 
                         if (rejected.hasOwnProperty(p)) {
                             if (original[p] == rejected[p]) {
                                 //values are equal
-                                result_or_rej[p] = 0;
+                                result_orig_rej[p] = 0;
                             }
                             else {
                                 //values not equal - change was done
-                                result_or_rej[p] = 1;
+                                result_orig_rej[p] = 1;
                             }
                         }
                     }
@@ -275,7 +359,7 @@ function replicationMerge(doc, conf, err, response) {
                     if (chosen.hasOwnProperty(p)) {
                         if (!original.hasOwnProperty(p)) {
                             //this property has been added to the chosen doc but was not in original
-                            result_or_cho[p] = 1;
+                            result_orig_cho[p] = 1;
                         }
                     }
                 }
@@ -284,18 +368,18 @@ function replicationMerge(doc, conf, err, response) {
                     if (rejected.hasOwnProperty(p)) {
                         if (!original.hasOwnProperty(p)) {
                             //this property has been added to the rejected doc but was not in original
-                            result_or_rej[p] = 1;
+                            result_orig_rej[p] = 1;
                         }
                     }
                 }
 
                 var newdoc = {};
-                //for each key in result_or_cho
-                for (var q in result_or_cho) {
-                    //if that key is also in result_or_rej, compare the values
-                    if (result_or_rej[q]) {
-                        if (result_or_cho[q] == 0) {
-                            if (result_or_rej[q] == 0) {
+                //for each key in result_orig_cho
+                for (var q in result_orig_cho) {
+                    //if that key is also in result_orig_rej, compare the values
+                    if (result_orig_rej[q]) {
+                        if (result_orig_cho[q] == 0) {
+                            if (result_orig_rej[q] == 0) {
                                 //everything is like the original
                             }
                             else {
@@ -303,7 +387,7 @@ function replicationMerge(doc, conf, err, response) {
                             }
                         }
                         else {
-                            if (result_or_rej[q] == 0) {
+                            if (result_orig_rej[q] == 0) {
                                 newdoc[q] = chosen[q];
                             }
                             else {
@@ -313,23 +397,21 @@ function replicationMerge(doc, conf, err, response) {
                         }
                     }
                     else {
-                        //the key is in result_or_cho but not in result_or_rej
+                        //the key is in result_orig_cho but not in result_orig_rej
                         newdoc[q] = chosen[q];
                     }
                 }
 
                 //add what wasnt in cho but is in rej to new doc
-                for (var q in result_or_rej) {
-                    if (result_or_cho[q] == null) {
+                for (var q in result_orig_rej) {
+                    if (result_orig_cho[q] == null) {
                         newdoc[q] = rejected[q];
                     }
                 }
+                
+                fw.put(newdoc, Update_NewRevisionNum).then(function () {
 
-                console.log(result_or_cho);
-                console.log(result_or_rej);
-                console.log(newdoc);
-
-                db.put(newdoc);
+                }).catch(function () { });
 
             }).catch(function (err) {
                 console.log(err);
@@ -338,41 +420,146 @@ function replicationMerge(doc, conf, err, response) {
         }).catch(function (err) {
             console.log(err);
         });
-
     }).catch(function (err) {
         console.log(err);
     });
-
-
 }
 
 
+/**
+    Replication -  Eventual conflict - Merge documents based on keys
+    For keys where both versions have been modified, merge both versions into the new version.
+    doc: the document declared as the winner by CouchDB
+    conf: revision number of the conflicting document
+*/
+function EventualConflicts_MergeText(doc, conf) {
+    var original;
+    var rejected;
+    var chosen = doc;
 
+    //get all the revisions of the winning document
+    var opts = { revs: true };
+    db.get(chosen._id, opts).then(function (doc) {
 
-//function deletePermanent(doc) {
+        var all_revs = doc._revisions;
 
-//    var docid = info.doc._id;
-//    var rev = info.doc._rev;
+        var split_revno = doc._rev.split("-");
 
-//    db.allDocs({
-//        include_docs: true,
-//        keys : [docid]
-//    }).then(function (result) {
-//        if (result.rows[0].value.deleted)
-//        {
-//            console.log('A deletion was made. Attempting to redelete.');
-//            db.get(docid).then(function (doc) {
-//                doc._deleted = true;
-//                return db.put(doc);
-//            });
-//        }
-//    }).catch(function (err) {
-//        console.log(err);
-//    });
-//}
+        var current_revno = split_revno[0];
+        var required_revno = (parseInt(current_revno) - 1).toString() + "-" + all_revs.ids[1];
 
+        var options = { rev: required_revno };
+        db.get(chosen._id, options).then(function (doc) {
 
+            original = doc;
+            var options_rej = { rev: conf };
+            db.get(doc._id, options_rej).then(function (doc) {
 
-// There was some form or error syncing
-function syncError() {
+                rejected = doc;
+                var result_orig_cho = {};
+                var result_orig_rej = {};
+
+                for (var p in original) {
+                    if (original.hasOwnProperty(p)) {
+                        if (chosen.hasOwnProperty(p)) {
+                            if (original[p] == chosen[p]) {
+                                //values are equal
+                                result_orig_cho[p] = 0;
+                            }
+                            else {
+                                //values not equal - change was done
+                                result_orig_cho[p] = 1;
+                            }
+                        }
+
+                        if (rejected.hasOwnProperty(p)) {
+                            if (original[p] == rejected[p]) {
+                                //values are equal
+                                result_orig_rej[p] = 0;
+                            }
+                            else {
+                                //values not equal - change was done
+                                result_orig_rej[p] = 1;
+                            }
+                        }
+                    }
+                }
+
+                for (var p in chosen) {
+                    if (chosen.hasOwnProperty(p)) {
+                        if (!original.hasOwnProperty(p)) {
+                            //this property has been added to the chosen doc but was not in original
+                            result_orig_cho[p] = 1;
+                        }
+                    }
+                }
+
+                for (var p in rejected) {
+                    if (rejected.hasOwnProperty(p)) {
+                        if (!original.hasOwnProperty(p)) {
+                            //this property has been added to the rejected doc but was not in original
+                            result_orig_rej[p] = 1;
+                        }
+                    }
+                }
+
+                var newdoc = {};
+                //for each key in result_orig_cho
+                for (var q in result_orig_cho) {
+                    //if that key is also in result_orig_rej, compare the values
+                    if (result_orig_rej[q]) {
+                        if (result_orig_cho[q] == 0) {
+                            if (result_orig_rej[q] == 0) {
+                                //everything is like the original
+                            }
+                            else {
+                                newdoc[q] = rejected[q];
+                            }
+                        }
+                        else {
+                            if (result_orig_rej[q] == 0) {
+                                newdoc[q] = chosen[q];
+                            }
+                            else {
+                                //combine both versions
+                                newdoc[q] = chosen[q] + ' ' + rejected[q];
+                            }
+                        }
+                    }
+                    else {
+                        //the key is in result_orig_cho but not in result_orig_rej
+                        newdoc[q] = chosen[q];
+                    }
+                }
+
+                //add what wasnt in cho but is in rej to new doc
+                for (var q in result_orig_rej) {
+                    if (result_orig_cho[q] == null) {
+                        newdoc[q] = rejected[q];
+                    }
+                }
+
+                fw.put(newdoc, Update_NewRevisionNum).then(function () {
+                
+                }).catch(function() {});
+
+            }).catch(function (err) {
+                console.log(err);
+            });
+
+        }).catch(function (err) {
+            console.log(err);
+        });
+    }).catch(function (err) {
+        console.log(err);
+    });
+}
+
+//Second constructor
+function ResFramework(dbName, remoteURL) {
+    this.onChangeCallback;
+    this.onConflictCallback;
+    this.dbName = dbName;
+    this.remoteURL = remoteURL;
+    this.options;
 }
