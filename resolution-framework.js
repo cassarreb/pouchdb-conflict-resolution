@@ -167,7 +167,7 @@ function Insert_ReAttemptWithUUID(doc, err, result) {
         else {
             if (err.status === 409) {
                 //Insert operation resulted in a conflict. Retry in progress.
-
+                doc._id = null;
                 this.fw.post(doc, Insert_NoReAttempt).then(function () {
                     resolve();
                 }).catch(function () {
@@ -177,7 +177,7 @@ function Insert_ReAttemptWithUUID(doc, err, result) {
             }
             else if (err.status === 412) {
                  //Missing ID. Retry in progress.
-
+                doc._id = null;
                 this.fw.post(doc, Insert_NoReAttempt)
                     .then(function () {
                         resolve();
